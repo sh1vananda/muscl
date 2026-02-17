@@ -5,7 +5,6 @@ Terminal audio player
 import os
 
 os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
-
 import msvcrt
 import random
 import sys
@@ -59,19 +58,21 @@ def render_frame(state, elapsed_ms, total_ms):
     bar_width = 20
     filled = int(bar_width * progress)
     bar = "█" * filled + "░" * (bar_width - filled)
-
     status = "PAUSE" if state.is_paused else "PLAY"
     shuff = " [S]" if state.is_shuffle else ""
     vol_pct = int(state.volume * 100)
     meta = f"{state.artist} - {state.title}"
-
     line = f"\r\033[2K[{status}]{shuff} {bar} {format_time(elapsed_ms)}/{format_time(total_ms)} | V:{vol_pct}% | {meta}"
     sys.stdout.write(line[:79])
     sys.stdout.flush()
 
 
-def run_player(songs):
-    state = PlayerState(playlist=songs)
+def run_player(songs, start_shuffled=False):
+    state = PlayerState(playlist=songs, is_shuffle=start_shuffled)
+
+    if start_shuffled:
+        random.shuffle(state.playlist)
+
     setup_hardware()
 
     def load_track():
@@ -120,8 +121,9 @@ def run_player(songs):
                     state.playlist.insert(0, current)
                     state.idx = 0
                 else:
+                    current_file = state.current_file
                     state.playlist.sort()
-                    state.idx = state.playlist.index(state.current_file)
+                    state.idx = state.playlist.index(current_file)
             elif key in ["=", "+"]:
                 state.volume = min(1.0, state.volume + 0.05)
                 mixer.music.set_volume(state.volume)
@@ -130,7 +132,6 @@ def run_player(songs):
                 mixer.music.set_volume(state.volume)
 
         elapsed = mixer.music.get_pos()
-
         if not mixer.music.get_busy() and not state.is_paused:
             if elapsed == -1 or elapsed >= (total_ms - 500):
                 state.idx = (state.idx + 1) % len(state.playlist)
@@ -138,12 +139,17 @@ def run_player(songs):
 
         render_frame(state, elapsed, total_ms)
         time.sleep(0.01)
-
     mixer.quit()
 
 
 if __name__ == "__main__":
-    target_dir = sys.argv[1] if len(sys.argv) > 1 else "./music"
+    args = sys.argv[1:]
+    do_shuffle = "--shuffle" in args
+    if do_shuffle:
+        args.remove("--shuffle")
+
+    target_dir = args[0] if len(args) > 0 else "./music"
+
     if not os.path.exists(target_dir):
         sys.exit(1)
 
@@ -156,6 +162,6 @@ if __name__ == "__main__":
         sys.exit(1)
 
     try:
-        run_player(files)
+        run_player(files, start_shuffled=do_shuffle)
     except KeyboardInterrupt:
         sys.exit(0)
