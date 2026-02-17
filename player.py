@@ -2,8 +2,12 @@
 Terminal audio player
 """
 
-import msvcrt
 import os
+
+os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
+
+import msvcrt
+import random
 import sys
 import time
 from dataclasses import dataclass
@@ -18,6 +22,7 @@ class PlayerState:
     playlist: list[str]
     idx: int = 0
     is_paused: bool = False
+    is_shuffle: bool = False
     volume: float = 0.5
     title: str = "Unknown"
     artist: str = "Unknown"
@@ -51,18 +56,17 @@ def format_time(ms):
 
 def render_frame(state, elapsed_ms, total_ms):
     progress = min(1.0, elapsed_ms / total_ms) if total_ms > 0 else 0
-    bar_width = 30
+    bar_width = 20
     filled = int(bar_width * progress)
     bar = "█" * filled + "░" * (bar_width - filled)
 
-    status = "PAUSED" if state.is_paused else "PLAYING"
+    status = "PAUSE" if state.is_paused else "PLAY"
+    shuff = " [S]" if state.is_shuffle else ""
     vol_pct = int(state.volume * 100)
+    meta = f"{state.artist} - {state.title}"
 
-    meta_text = f"{state.artist} - {state.title}"[:40]
-
-    sys.stdout.write(
-        f"\r\033[K[{status}] {bar} {format_time(elapsed_ms)}/{format_time(total_ms)} | Vol: {vol_pct}% | {meta_text}"
-    )
+    line = f"\r\033[2K[{status}]{shuff} {bar} {format_time(elapsed_ms)}/{format_time(total_ms)} | V:{vol_pct}% | {meta}"
+    sys.stdout.write(line[:79])
     sys.stdout.flush()
 
 
@@ -89,6 +93,7 @@ def run_player(songs):
                 continue
 
             if key == "q":
+                sys.stdout.write("\nQuit.\n")
                 break
             elif key == "p":
                 if state.is_paused:
@@ -107,6 +112,16 @@ def run_player(songs):
                     state.idx = (state.idx - 1) % len(state.playlist)
                     total_ms = load_track()
                 state.is_paused = False
+            elif key == "s":
+                state.is_shuffle = not state.is_shuffle
+                if state.is_shuffle:
+                    current = state.playlist.pop(state.idx)
+                    random.shuffle(state.playlist)
+                    state.playlist.insert(0, current)
+                    state.idx = 0
+                else:
+                    state.playlist.sort()
+                    state.idx = state.playlist.index(state.current_file)
             elif key in ["=", "+"]:
                 state.volume = min(1.0, state.volume + 0.05)
                 mixer.music.set_volume(state.volume)
@@ -129,9 +144,7 @@ def run_player(songs):
 
 if __name__ == "__main__":
     target_dir = sys.argv[1] if len(sys.argv) > 1 else "./music"
-
     if not os.path.exists(target_dir):
-        print(f"Error: Directory '{target_dir}' not found.")
         sys.exit(1)
 
     files = [
@@ -139,9 +152,7 @@ if __name__ == "__main__":
         for f in os.listdir(target_dir)
         if f.endswith(".mp3")
     ]
-
     if not files:
-        print(f"No MP3 files found in {target_dir}")
         sys.exit(1)
 
     try:
