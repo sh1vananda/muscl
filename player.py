@@ -16,6 +16,7 @@ class PlayerState:
     playlist: list[str]
     idx: int = 0
     is_paused: bool = False
+    volume: float = 0.5
 
     @property
     def current_file(self):
@@ -25,6 +26,7 @@ class PlayerState:
 def setup_hardware():
     mixer.pre_init(44100, -16, 2, 512)
     mixer.init()
+    mixer.music.set_volume(0.5)
 
 
 def format_time(ms):
@@ -39,8 +41,10 @@ def render_frame(state, elapsed_ms, total_ms):
     filled = int(bar_width * progress)
     bar = "█" * filled + "░" * (bar_width - filled)
     status = "PAUSED" if state.is_paused else "PLAYING"
+    vol_pct = int(state.volume * 100)
+
     sys.stdout.write(
-        f"\r\033[K[{status}] {bar} {format_time(elapsed_ms)} / {format_time(total_ms)} | {os.path.basename(state.current_file)[:25]}"
+        f"\r\033[K[{status}] {bar} {format_time(elapsed_ms)}/{format_time(total_ms)} | Vol: {vol_pct}% | {os.path.basename(state.current_file)[:20]}"
     )
     sys.stdout.flush()
 
@@ -72,6 +76,19 @@ def run_player(songs):
                 state.idx = (state.idx + 1) % len(state.playlist)
                 total_ms = load_track()
                 state.is_paused = False
+            elif key == "b":
+                if mixer.music.get_pos() > 2000:
+                    total_ms = load_track()
+                else:
+                    state.idx = (state.idx - 1) % len(state.playlist)
+                    total_ms = load_track()
+                state.is_paused = False
+            elif key in ["=", "+"]:
+                state.volume = min(1.0, state.volume + 0.05)
+                mixer.music.set_volume(state.volume)
+            elif key == "-":
+                state.volume = max(0.0, state.volume - 0.05)
+                mixer.music.set_volume(state.volume)
 
         elapsed = mixer.music.get_pos()
 
@@ -87,18 +104,13 @@ def run_player(songs):
 
 if __name__ == "__main__":
     target_dir = "./music"
-    if not os.path.exists(target_dir):
-        os.makedirs(target_dir)
-
     files = [
         os.path.join(target_dir, f)
         for f in os.listdir(target_dir)
         if f.endswith(".mp3")
     ]
-
     if not files:
         sys.exit(1)
-
     try:
         run_player(files)
     except KeyboardInterrupt:
