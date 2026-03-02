@@ -1,5 +1,5 @@
 """
-Terminal audio player
+A flawless, minimalist terminal-based MP3 player for Windows.
 """
 
 import ctypes
@@ -89,17 +89,17 @@ class Track:
             audio_info = MP3(self.path)
             self.duration_ms = int(audio_info.info.length * 1000)
 
-            # Then try to get tags
+            # Then try to get tags securely
             tags = EasyID3(self.path)
-            if "title" in tags:
-                self.title = tags["title"][0]
-            if "artist" in tags:
-                self.artist = tags["artist"][0]
-        except mutagen.MutagenError:
-            # Fallback to filename if tags are reasonably unreadable
-            pass
+            title_tag = tags.get("title", [])
+            artist_tag = tags.get("artist", [])
+
+            if title_tag and str(title_tag[0]).strip():
+                self.title = str(title_tag[0]).strip()
+            if artist_tag and str(artist_tag[0]).strip():
+                self.artist = str(artist_tag[0]).strip()
         except Exception:
-            # Catch any other exceptions (e.g., MP3 parsing error)
+            # Fallback seamlessly to filename if tags are unreadable/missing
             pass
 
 
@@ -153,6 +153,8 @@ class MusclPlayer:
 
     def _shuffle_playlist(self) -> None:
         """Shuffles the playlist, keeping the current track (if any) at index 0."""
+        if not self.tracks:
+            return
         current_track = self.current_track
         random.shuffle(self.tracks)
         # Move current track to the front to prevent skipping it immediately
@@ -162,6 +164,8 @@ class MusclPlayer:
 
     def _unshuffle_playlist(self) -> None:
         """Restores the original playlist order, updating current index."""
+        if not self.tracks:
+            return
         current_track = self.current_track
         self.tracks = list(self.original_playlist)
         self.current_idx = self.tracks.index(current_track)
@@ -171,17 +175,29 @@ class MusclPlayer:
         return self.tracks[self.current_idx]
 
     def load_and_play(self) -> None:
-        """Loads and starts the current track."""
+        """Loads and starts the current track. Dynamically ejects broken files."""
+        if not self.tracks:
+            self.running = False
+            return
+
         try:
             mixer.music.load(str(self.current_track.path))
             mixer.music.play()
             self.is_paused = False
             self.is_track_loaded = True
         except Exception:
-            # If a file fails to load, skip to next or stop if it's the only one
+            # If a file is completely corrupted, fail gracefully and eject it
             self.is_track_loaded = False
-            if len(self.tracks) > 1:
-                self.next_track()
+            broken_track = self.current_track
+            
+            self.tracks.remove(broken_track)
+            if broken_track in self.original_playlist:
+                self.original_playlist.remove(broken_track)
+
+            # Auto-skip to the next available track
+            if len(self.tracks) > 0:
+                self.current_idx = self.current_idx % len(self.tracks)
+                self.load_and_play()
             else:
                 self.running = False
 
@@ -203,10 +219,14 @@ class MusclPlayer:
             self._unshuffle_playlist()
 
     def next_track(self) -> None:
+        if not self.tracks:
+            return
         self.current_idx = (self.current_idx + 1) % len(self.tracks)
         self.load_and_play()
 
     def previous_track(self) -> None:
+        if not self.tracks:
+            return
         # If we are more than 2 seconds in, restart track
         if mixer.music.get_pos() > 2000:
             self.load_and_play()
@@ -216,7 +236,8 @@ class MusclPlayer:
             self.load_and_play()
 
     def change_volume(self, delta: float) -> None:
-        self.volume = max(0.0, min(1.0, self.volume + delta))
+        # High precision rounding ensures clean values (no float trailing point errors)
+        self.volume = round(max(0.0, min(1.0, self.volume + delta)), 2)
         mixer.music.set_volume(self.volume)
 
     def handle_input(self) -> None:
@@ -254,12 +275,13 @@ class MusclPlayer:
                 self.change_volume(-PlayerConfig.VOLUME_STEP)
 
     def render(self) -> None:
-        """Draws the player interface to the terminal."""
+        """Draws the player interface to the terminal with crisp formatting."""
+        if not self.tracks:
+            return
+
         track = self.current_track
         
         # Elapsed time
-        # get_pos returns time played in ms (stops increasing when paused).
-        # It returns -1 if play fails or track finishes.
         elapsed_ms = mixer.music.get_pos()
         if elapsed_ms < 0:
             elapsed_ms = track.duration_ms if not self.is_paused and self.is_track_loaded else 0
@@ -268,30 +290,40 @@ class MusclPlayer:
         progress = elapsed_ms / track.duration_ms if track.duration_ms > 0 else 0
         progress = max(0.0, min(1.0, progress))
 
-        # Build progress bar
-        bar_width = PlayerConfig.BAR_WIDTH
-        filled = int(bar_width * progress)
-        bar = "█" * filled + "░" * (bar_width - filled)
+        # Build progress bar (Cyan filled, Dark Gray empty)
+        filled = int(PlayerConfig.BAR_WIDTH * progress)
+        filled_str = "█" * filled
+        empty_str = "░" * (PlayerConfig.BAR_WIDTH - filled)
+        bar_visual = f"\033[36m{filled_str}\033[90m{empty_str}\033[0m"
 
-        # Status text
-        status = "PAUSED " if self.is_paused else "PLAYING"
-        shuffle_str = " [SHUFFLE]" if self.is_shuffle else ""
+        # Status text colors (Green = Play, Yellow = Paused)
+        status_text = "PAUSED " if self.is_paused else "PLAYING"
+        status_color = "\033[93m" if self.is_paused else "\033[92m"
+        status_visual = f"{status_color}[{status_text}]\033[0m"
+        
+        shuffle_visual = " \033[95m[SHUFFLE]\033[0m" if self.is_shuffle else ""
         vol_pct = round(self.volume * 100)
         
         # Formatting components
         time_str = f"{TerminalUI.format_time(elapsed_ms)}/{TerminalUI.format_time(track.duration_ms)}"
-        meta_str = f"{track.artist} - {track.title}"
         
-        # Primary rendering line
-        line = f" [{status}]{shuffle_str} {bar} {time_str} | VOL: {vol_pct}% | {meta_str} "
-        
-        # Get console width dynamically to avoid layout wrap-around bugs
+        # Get console width dynamically to calculate clean text truncation mapping
         try:
             term_cols = os.get_terminal_size().columns
         except OSError:
             term_cols = 120  # Safe fallback
             
-        line = TerminalUI.truncate_string(line, term_cols - 1)
+        # Hard visual space calculation of UI components to truncate metadata without ripping ANSI codes.
+        # Fixed chars approx: " [PLAYING] [SHUFFLE] ██████... 00:00/00:00 | VOL: 100% | "
+        ui_logic_len = 59 + (10 if self.is_shuffle else 0)
+        max_meta_len = max(5, term_cols - ui_logic_len)
+        
+        raw_meta = f"{track.artist} - {track.title}"
+        truncated_meta = TerminalUI.truncate_string(raw_meta, max_meta_len)
+        meta_visual = f"\033[1m{truncated_meta}\033[0m"
+        
+        # Primary rendering line
+        line = f" {status_visual}{shuffle_visual} {bar_visual} {time_str} \033[90m|\033[0m VOL: \033[33m{vol_pct}%\033[0m \033[90m|\033[0m {meta_visual} "
 
         # Print with carriage return seamlessly
         sys.stdout.write(f"\r{line}\033[K")
@@ -332,6 +364,10 @@ def get_target_directory(args: List[str]) -> Path:
         
     if not target.exists():
         print(f"Error: Directory '{target}' does not exist.")
+        sys.exit(1)
+        
+    if not target.is_dir():
+        print(f"Error: Target '{target}' is not a directory.")
         sys.exit(1)
         
     return target
